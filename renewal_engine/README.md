@@ -7,7 +7,7 @@ Production-grade prototype for predicting renewal risk using **structured + unst
 ```mermaid
 flowchart TD
     A[Raw Inputs] --> B[Data Ingestion Layer]
-    B --> C[Entity Resolution\n(Account Name Normalization)]
+    B --> C["Entity Resolution<br/>(Account Name Normalization)"]
     C --> D[Feature Engineering]
     D --> E[Hybrid Risk Scoring Engine]
     E --> F[LLM Explanation Engine]
