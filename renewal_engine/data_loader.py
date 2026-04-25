@@ -50,15 +50,22 @@ class DataLoader:
         Normalizes a source dataframe to guarantee `account_name` when possible.
         If `account_name` is missing and `account_id` exists, enrich from reference_df.
         """
-        out = df.copy()
+        out = self._canonicalize_columns(df.copy())
+        ref = self._canonicalize_columns(reference_df.copy())
+
+        if "account_id" in out.columns:
+            out["account_id"] = out["account_id"].astype(str).str.strip()
+        if "account_id" in ref.columns:
+            ref["account_id"] = ref["account_id"].astype(str).str.strip()
+
         if "account_name" not in out.columns:
-            if "account_id" in out.columns and "account_id" in reference_df.columns and "account_name" in reference_df.columns:
+            if "account_id" in out.columns and "account_id" in ref.columns and "account_name" in ref.columns:
                 logger.info(
                     "%s missing account_name; backfilling from accounts reference using account_id",
                     dataset_name,
                 )
                 out = out.merge(
-                    reference_df[["account_id", "account_name"]],
+                    ref[["account_id", "account_name"]],
                     on="account_id",
                     how="left",
                 )
@@ -78,6 +85,27 @@ class DataLoader:
                 )
         return out
 
+    def _canonicalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        aliases = {
+            "accountid": "account_id",
+            "account_id": "account_id",
+            "acct_id": "account_id",
+            "customer_id": "account_id",
+            "accountname": "account_name",
+            "account_name": "account_name",
+            "acct_name": "account_name",
+            "customer_name": "account_name",
+            "createdat": "created_at",
+            "updatedat": "updated_at",
+            "responsedate": "response_date",
+        }
+        renamed = {}
+        for col in df.columns:
+            compact = re.sub(r"[^a-z0-9]", "", col.strip().lower())
+            if compact in aliases and aliases[compact] not in df.columns:
+                renamed[col] = aliases[compact]
+        return df.rename(columns=renamed)
+
     def _standardize(self, df: pd.DataFrame, account_col: str) -> pd.DataFrame:
         if account_col not in df.columns:
             raise ValueError(f"Expected column '{account_col}' not found in {df.columns.tolist()}")
@@ -86,10 +114,11 @@ class DataLoader:
         return out
 
     def _load_accounts(self, path: Path) -> pd.DataFrame:
-        df = pd.read_csv(path)
+        df = self._canonicalize_columns(pd.read_csv(path))
         for col in ["account_id", "account_name", "renewal_date"]:
             if col not in df.columns:
                 raise ValueError(f"accounts.csv missing required column: {col}")
+        df["account_id"] = df["account_id"].astype(str).str.strip()
         df = self._standardize(df, "account_name")
         if "arr" in df.columns:
             df["arr"] = robust_to_numeric(df["arr"]).fillna(0.0)
@@ -97,7 +126,7 @@ class DataLoader:
         return df
 
     def _load_usage(self, path: Path, accounts_df: pd.DataFrame) -> pd.DataFrame:
-        df = pd.read_csv(path)
+        df = self._canonicalize_columns(pd.read_csv(path))
         df = self.normalize_schema(df, accounts_df, "usage_metrics.csv")
 
         required = ["date", "active_users", "api_calls"]
@@ -118,7 +147,7 @@ class DataLoader:
         return df
 
     def _load_support(self, path: Path) -> pd.DataFrame:
-        df = pd.read_csv(path)
+        df = self._canonicalize_columns(pd.read_csv(path))
         required = ["account_name", "created_at", "severity", "status"]
         for col in required:
             if col not in df.columns:
@@ -130,7 +159,7 @@ class DataLoader:
         return df
 
     def _load_nps(self, path: Path) -> pd.DataFrame:
-        df = pd.read_csv(path)
+        df = self._canonicalize_columns(pd.read_csv(path))
         required = ["account_name", "score", "comment", "response_date"]
         for col in required:
             if col not in df.columns:
