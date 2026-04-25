@@ -32,13 +32,51 @@ class DataLoader:
         validate_input_dir(self.config.input_dir)
 
         accounts = self._load_accounts(self.config.input_dir / "accounts.csv")
-        usage = self._load_usage(self.config.input_dir / "usage_metrics.csv")
+        usage = self._load_usage(self.config.input_dir / "usage_metrics.csv", accounts)
         support = self._load_support(self.config.input_dir / "support_tickets.csv")
         nps = self._load_nps(self.config.input_dir / "nps_responses.csv")
         csm_notes = self._parse_csm_notes(self.config.input_dir / "csm_notes.txt")
         changelog_events = self._parse_changelog(self.config.input_dir / "changelog.md")
 
         return LoadedData(accounts, usage, support, nps, csm_notes, changelog_events)
+
+    def normalize_schema(
+        self,
+        df: pd.DataFrame,
+        reference_df: pd.DataFrame,
+        dataset_name: str,
+    ) -> pd.DataFrame:
+        """
+        Normalizes a source dataframe to guarantee `account_name` when possible.
+        If `account_name` is missing and `account_id` exists, enrich from reference_df.
+        """
+        out = df.copy()
+        if "account_name" not in out.columns:
+            if "account_id" in out.columns and "account_id" in reference_df.columns and "account_name" in reference_df.columns:
+                logger.info(
+                    "%s missing account_name; backfilling from accounts reference using account_id",
+                    dataset_name,
+                )
+                out = out.merge(
+                    reference_df[["account_id", "account_name"]],
+                    on="account_id",
+                    how="left",
+                )
+            else:
+                logger.warning(
+                    "%s missing account_name and cannot backfill (account_id reference unavailable)",
+                    dataset_name,
+                )
+
+        if "account_name" in out.columns:
+            missing_after = out["account_name"].isna().sum()
+            if missing_after > 0:
+                logger.warning(
+                    "%s has %s rows with missing account_name after schema normalization",
+                    dataset_name,
+                    int(missing_after),
+                )
+        return out
 
     def _standardize(self, df: pd.DataFrame, account_col: str) -> pd.DataFrame:
         if account_col not in df.columns:
@@ -58,12 +96,19 @@ class DataLoader:
         df["renewal_date"] = robust_to_datetime(df["renewal_date"])
         return df
 
-    def _load_usage(self, path: Path) -> pd.DataFrame:
+    def _load_usage(self, path: Path, accounts_df: pd.DataFrame) -> pd.DataFrame:
         df = pd.read_csv(path)
-        required = ["account_name", "date", "active_users", "api_calls"]
+        df = self.normalize_schema(df, accounts_df, "usage_metrics.csv")
+
+        required = ["date", "active_users", "api_calls"]
         for col in required:
             if col not in df.columns:
                 raise ValueError(f"usage_metrics.csv missing required column: {col}")
+        if "account_name" not in df.columns:
+            raise ValueError(
+                "usage_metrics.csv schema normalization failed: expected account_name or account_id->account_name mapping"
+            )
+
         df = self._standardize(df, "account_name")
         df["date"] = robust_to_datetime(df["date"])
         df["active_users"] = robust_to_numeric(df["active_users"]).fillna(0)
